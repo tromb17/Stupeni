@@ -14,7 +14,7 @@
   <script src="../js/content/a2.js"></script>
   <script src="../js/content/b1.js"></script>
   <script src="../js/content/b2.js"></script>
-  <script src="../js/content/reading.js"></script>
+  <script src="../js/content/reading.js"></script><script src="../js/content/sets.js"></script>
   <script src="../js/app.js"></script>
   <script>
   /* Проходит приложение по шагам и пишет итог в body[data-res]. Открывать Edge без окна с --dump-dom. */
@@ -91,6 +91,49 @@
       guard = 0; while (T.R.sc[T.R.i].t !== 'result' && guard++ < 30) { const s = T.R.sc[T.R.i]; A.pick({ i: s.opts.indexOf(s.a) }); A.testNext(); }
       ok(T.S.reads['r-a2-1'] && T.S.reads['r-a2-1'].ok === 6, 'вопросы к тексту: 6 из 6');
       A.runDone();
+
+      // наборы: вставка списком
+      const pw = T.parseWords('journey — путешествие — The journey was long.\nluggage - багаж\nбилет = ticket\n1. to book; бронировать\nwell-known\tизвестный\nбез разделителя\njourney — дубль');
+      ok(pw.length === 5, 'вставка списком: 5 слов из 7 строк (' + pw.length + ')');
+      ok(pw[2][0] === 'ticket' && pw[2][1] === 'билет', 'перевод первым — меняется местами');
+      ok(pw[0][2] === 'The journey was long.' && pw[4][0] === 'well-known', 'пример третьей частью, дефис внутри слова не режет');
+      nav('#cards'); A.ct({ v: 'sets' }); ok(/Готовые наборы/.test(view()) && /В аэропорту/.test(view()), 'список наборов');
+      A.newSet(); nav('#setedit/new');
+      document.getElementById('st-title').value = 'Тест'; document.getElementById('st-words').value = 'journey — путешествие\nluggage — багаж\nticket — билет\nbook — бронировать\nbeach — пляж';
+      A.saveSet({ id: 'new' }); const sid = Object.keys(T.S.sets)[0]; nav('#set/' + sid);
+      ok(sid && T.S.sets[sid].words.length === 5 && /Заучивание/.test(view()), 'свой набор создан, режимы на месте');
+      // заучивание: всё верно → весь набор выучен
+      A.mode({ m: 'learn', id: sid }); nav('#run');
+      guard = 0; while (T.R.sc[T.R.i].t !== 'result' && guard++ < 40) { const s = T.R.sc[T.R.i];
+        if (s.t === 'choice') { A.pick({ i: s.opts.indexOf(s.a) }); A.next(); } else if (s.t === 'type') { document.getElementById('ans').value = s.a; A.checkType(); A.next(); } else A.next(); }
+      let st = T.setStats(T.getSet(sid)); ok(st.known === 5, 'заучивание: выучено 5 из 5');
+      ok(/Ещё круг/.test(view()), 'итоги заучивания');
+      A.runDone(); ok(location.hash === '#set/' + sid, 'возврат к набору');
+      // письмо с ошибкой → слово уходит из «выучено»
+      A.mode({ m: 'write', id: sid }); nav('#run'); { const s = T.R.sc[T.R.i]; document.getElementById('ans').value = 'zzz'; A.checkType(); }
+      ok(T.setStats(T.getSet(sid)).known === 4, 'ошибка в письме снимает «выучено»');
+      A.runExit(); T.render();
+      // подбор пар
+      A.mode({ m: 'match', id: sid }); nav('#match/' + sid);
+      ok(document.querySelectorAll('.mtile').length === 10, 'подбор пар: 10 плиток');
+      A.mt({ i: 0 }); A.mt({ i: T.MS.tiles.findIndex((t, k) => k !== 0 && t.p !== T.MS.tiles[0].p) }); ok(T.MS.pen === 1000, 'ошибка в паре — штраф 1 с');
+      for (let p = 0; p < 5; p++) { const a = T.MS.tiles.findIndex((t) => t.p === p && t.en), b = T.MS.tiles.findIndex((t) => t.p === p && !t.en); A.mt({ i: a }); A.mt({ i: b }); }
+      ok(T.MS.end && T.S.setp[sid].best > 0 && /Новый рекорд/.test(view()), 'подбор пар до конца, рекорд записан');
+      // тест набора, где есть письмо
+      A.mode({ m: 'test', id: 'ts-food' }); nav('#run');
+      guard = 0; while (T.R.sc[T.R.i].t !== 'result' && guard++ < 40) { const s = T.R.sc[T.R.i];
+        if (s.t === 'choice') { A.pick({ i: s.opts.indexOf(s.a) }); A.testNext(); } else if (s.t === 'type') { document.getElementById('ans').value = s.a; A.testType(); } else A.next(); }
+      ok(T.S.setp['ts-food'].test && T.S.setp['ts-food'].test.ok === 15, 'тест набора: 15 из 15');
+      ok(T.setStats(T.getSet('ts-food')).known >= 3, 'письмо в тесте отмечает «выучено»');
+      A.runDone();
+      // карточки набора и на слух
+      A.mode({ m: 'flash', id: 'ts-hotel' }); nav('#review');
+      g = 0; while (document.querySelector('[data-a="flip"]') && g++ < 40) { A.flip(); A.grade({ g: g === 1 ? 0 : 2 }); }
+      ok(/Знали сразу 15 из 16/.test(view()), 'карточки набора: «Ещё учу» вернулось и засчиталось');
+      A.mode({ m: 'listen', id: 'ts-hotel' }); nav('#run'); ok(T.R.sc[0].dict && /Диктант/.test(view()), 'режим «на слух»');
+      A.runExit(); T.render();
+      A.toSrs({ id: 'ts-travel' }); ok(T.S.cards['boarding pass'] && T.S.cards['boarding pass'].due <= Date.now(), 'набор — в повторение по расписанию');
+      nav('#set/l-a1-1'); ok(/Знакомство/.test(view()), 'набор из слов урока');
 
       // сверка ответов
       ok(T.checkText("I'm a student", 'I am a student.') === 2, "сокращения: I'm = I am");

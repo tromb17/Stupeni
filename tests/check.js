@@ -3,7 +3,7 @@
 const fs = require('fs'), path = require('path'), vm = require('vm');
 const root = path.join(__dirname, '..');
 const win = {};
-['a1', 'a2', 'b1', 'b2', 'reading'].forEach((f) => vm.runInNewContext(fs.readFileSync(path.join(root, 'js/content', f + '.js'), 'utf8'), { window: win }));
+['a1', 'a2', 'b1', 'b2', 'reading', 'sets'].forEach((f) => vm.runInNewContext(fs.readFileSync(path.join(root, 'js/content', f + '.js'), 'utf8'), { window: win }));
 const errs = [], warn = [];
 const E = (m) => errs.push(m), W = (m) => warn.push(m);
 const seenWords = {};
@@ -52,6 +52,14 @@ const P = win.PLACEMENT || [];
 ['a1', 'a2', 'b1', 'b2'].forEach((lv) => P.filter((p) => p[0] === lv).length !== 3 && E('тест уровня: у ' + lv + ' не 3 вопроса'));
 P.forEach((p) => (p[1].match(/___/g) || []).length !== 1 && E('тест уровня: пропуск: ' + p[1]));
 
+const sids = {};
+(win.SETS || []).forEach((st) => {
+  if (sids[st.id]) E('набор: повтор id ' + st.id); sids[st.id] = 1;
+  if (!st.title || !st.icon || st.words.length < 12) E('набор неполный: ' + st.id);
+  const seen = {};
+  st.words.forEach((w) => { if (!w[0] || !w[1] || !w[2]) E(st.id + ': слово без перевода или примера: ' + w[0]); const k = w[0].toLowerCase(); if (seen[k]) E(st.id + ': повтор ' + w[0]); seen[k] = 1; });
+});
+console.log(`Наборов ${(win.SETS || []).length}, слов в них ${(win.SETS || []).reduce((a, s) => a + s.words.length, 0)}`);
 console.log(`Уроков ${lessons}, слов ${words}, заданий ${drills}, текстов ${(win.READING || []).length}, тест уровня ${P.length}`);
 warn.forEach((w) => console.log('  ! ' + w));
 if (errs.length) { errs.forEach((e) => console.log('  ✗ ' + e)); process.exit(1); }

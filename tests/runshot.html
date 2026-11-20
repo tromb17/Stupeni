@@ -12,13 +12,20 @@
 <body>
   <div id="app"><header id="top"></header><main id="view"></main><nav id="nav"></nav></div>
   <div id="sheet"></div><div id="toast"></div>
-  <script src="../js/content/a1.js"></script><script src="../js/content/a2.js"></script><script src="../js/content/b1.js"></script><script src="../js/content/b2.js"></script><script src="../js/content/reading.js"></script>
+  <script src="../js/content/a1.js"></script><script src="../js/content/a2.js"></script><script src="../js/content/b1.js"></script><script src="../js/content/b2.js"></script><script src="../js/content/reading.js"></script><script src="../js/content/sets.js"></script>
   <script src="../js/app.js"></script>
   <script>
   (function () {
     const q = new URLSearchParams(location.search), T = window.__stupeni, A = T.A;
     const to = q.get('to') || 'word', nth = +(q.get('n') || 1);
     const nav = (h) => { history.replaceState(null, '', h); T.render(); };
+    if (q.get('set')) { // режим набора: runshot.html?set=ts-food&m=match&pick=2
+      const id = q.get('set'), m = q.get('m');
+      A.mode({ m, id }); nav(m === 'match' ? '#match/' + id : m === 'flash' ? '#review' : '#run');
+      if (m === 'match') { const t = T.MS.tiles; const a = t.findIndex((x) => x.p === 0 && x.en), b = t.findIndex((x) => x.p === 0 && !x.en); A.mt({ i: a }); A.mt({ i: b }); A.mt({ i: t.findIndex((x) => x.p === 1 && x.en) }); }
+      else if (m !== 'flash') { while (T.R.sc[T.R.i].t === 'sec' || T.R.sc[T.R.i].t === 'tintro') A.next(); }
+      return;
+    }
     if (to === 'review') {
       A.lesson({ id: q.get('id') || 'a1-1' }); T.R.sc.forEach((s) => s.t === 'word' && 0);
       T.LES[q.get('id') || 'a1-1'].words.forEach((w) => (T.S.cards[w[0]] = { en: w[0], ru: w[1], ex: w[2], exr: w[3], tip: w[4], l: 'x', box: 1, due: 0, n: 1, lap: 0, add: 1 }));

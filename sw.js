@@ -1,8 +1,8 @@
 /* Работа без интернета: свои файлы — из кэша, шрифт — кэшируется при первой загрузке.
    Поменял набор файлов или их содержимое — подними номер CACHE. */
-const CACHE = 'stupeni-v1';
+const CACHE = 'stupeni-v2';
 const FILES = ['./', 'index.html', 'css/app.css', 'js/app.js', 'js/content/a1.js', 'js/content/a2.js', 'js/content/b1.js',
-  'js/content/b2.js', 'js/content/reading.js', 'manifest.webmanifest', 'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png'];
+  'js/content/b2.js', 'js/content/reading.js', 'js/content/sets.js', 'manifest.webmanifest', 'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png'];
 
 self.addEventListener('install', (e) => e.waitUntil(caches.open(CACHE).then((c) => c.addAll(FILES)).then(() => self.skipWaiting())));
 self.addEventListener('activate', (e) => e.waitUntil(

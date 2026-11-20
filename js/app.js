@@ -18,6 +18,9 @@
   LEVELS.forEach((lv) => (C[lv.id] || []).forEach((l, i) => { l.level = lv.id; l.n = i + 1; LES[l.id] = l; ALL.push(l); }));
   const lessonsOf = (lv) => ALL.filter((l) => l.level === lv);
   const READ = Object.fromEntries(READING.map((r) => [r.id, r]));
+  const SETS = window.SETS || [];
+  const READY = Object.fromEntries(SETS.map((s) => [s.id, s]));
+  const SET_KINDS = ['learn', 'write', 'listen', 'settest'];
 
   const STEPS = [
     { name: 'Слова', min: 5, icon: 'cards', text: 'Послушайте 8 новых слов, повторите их вслух и прочитайте подсказку — она помогает запомнить.' },
@@ -84,7 +87,7 @@
   /* ---------- состояние ---------- */
   const KEY = 'stupeni.v1', RKEY = 'stupeni.run.v1';
   const DEF = () => ({ v: 1, onboarded: false, level: 'a1', goal: 20, accent: 'en-US', rate: 0.9, theme: 'auto',
-    lessons: {}, cards: {}, days: {}, wrong: {}, tests: [], reads: {}, mist: {}, xp: 0 });
+    lessons: {}, cards: {}, days: {}, wrong: {}, tests: [], reads: {}, mist: {}, xp: 0, sets: {}, setp: {} });
   let S = Object.assign(DEF(), store.get(KEY) || {});
   let R = store.get(RKEY);           // текущее занятие (урок, тест…) — переживает перезапуск
   let CS = null;                     // повторение карточек
@@ -208,6 +211,40 @@
     else { c.box = nextBox(c, g); c.due = sod() + DAY * INT[c.box]; }
   }
 
+  /* ---------- наборы слов ---------- */
+  // Свои (S.sets, id my-…), готовые (SETS, ts-…) и слова уроков (l-<id урока>). Прогресс — S.setp[id].m[слово] = 0 новое, 1 знакомо, 2 выучено.
+  const wkey = (w) => String(w[0]).toLowerCase().trim();
+  function getSet(id) {
+    if (S.sets[id]) return Object.assign({ mine: true }, S.sets[id]);
+    if (READY[id]) return READY[id];
+    if (id && id.startsWith('l-') && LES[id.slice(2)]) { const L = LES[id.slice(2)]; return { id, title: L.title, icon: L.icon, desc: 'слова урока ' + LV[L.level].name, words: L.words, lesson: L.id }; }
+    return null;
+  }
+  const setProg = (id) => (S.setp[id] = S.setp[id] || { m: {} });
+  function setStats(set) {
+    const p = S.setp[set.id] || { m: {} }; let known = 0, fam = 0;
+    set.words.forEach((w) => { const m = p.m[wkey(w)] || 0; if (m >= 2) known++; else if (m === 1) fam++; });
+    return { known, fam, n: set.words.length };
+  }
+  const markWord = (id, k, lvl) => { const p = setProg(id); p.m[k] = Math.max(p.m[k] || 0, lvl); p.last = Date.now(); };
+  const markDown = (id, k) => { const p = setProg(id); if ((p.m[k] || 0) > 1) p.m[k] = 1; };
+  const setPool = (set) => (set.words.length >= 4 ? set.words : set.words.concat(ALL.flatMap((l) => l.words)));
+  const fmtT = (ms) => (ms / 1000).toFixed(1).replace('.', ',') + ' с';
+  // строки «слово — перевод — пример»; разделитель: тире, «;», «=», табуляция; русское первым — меняем местами
+  function parseWords(txt) {
+    const out = [], seen = {}, cyr = /[а-яё]/i;
+    String(txt || '').split(/\r?\n/).forEach((line) => {
+      line = line.trim().replace(/^\d+[.)]\s+|^[-•*]\s+/, ''); if (!line) return;
+      let parts = (line.includes('\t') ? line.split('\t') : line.split(/\s+-\s+|\s*[—–]\s*|\s*[;=]\s*/)).map((s) => s.trim()).filter(Boolean);
+      if (parts.length < 2) return;
+      let [a, b, ...rest] = parts;
+      if (cyr.test(a) && !cyr.test(b)) [a, b] = [b, a];
+      const k = a.toLowerCase(); if (seen[k]) return; seen[k] = 1;
+      out.push([a, b, rest.join(' — ')]);
+    });
+    return out;
+  }
+
   /* ---------- построение занятий ---------- */
   const fill = (q, a) => q.replace('___', a);
   function qDrill(L, i, test) {
@@ -308,6 +345,60 @@
     sc.push({ t: 'result' });
     startRun(newRun('read', id, T.title, sc));
   }
+  // режимы набора
+  function startLearn(id) {
+    const set = getSet(id), p = setProg(id), pool = setPool(set);
+    let ws = shuffle(set.words).sort((a, b) => (p.m[wkey(a)] || 0) - (p.m[wkey(b)] || 0)).filter((w) => (p.m[wkey(w)] || 0) < 2).slice(0, 10);
+    const review = !ws.length; if (review) ws = pick(set.words, 10);
+    const sc = [{ t: 'sec', title: 'Раунд 1: узнаём', kick: review ? 'Всё выучено — повторим' : ws.length + ' ' + plural(ws.length, 'слово', 'слова', 'слов'), icon: 'target', text: 'Выберите правильный перевод. Ошибки вернутся в конце раунда — пока не ответите верно.' }];
+    ws.forEach((w) => sc.push(Object.assign(qWord(w, pool, false, 'en-ru'), { sw: wkey(w), sl: 1 })));
+    sc.push({ t: 'sec', title: 'Раунд 2: вспоминаем', kick: 'те же слова', icon: 'text', text: 'Теперь вспомните сами: видите перевод — пишете слово по-английски.' });
+    shuffle(ws).forEach((w) => sc.push({ t: 'type', q: w[1], a: w[0], why: w[2] || '', full: w[2] || '', sw: wkey(w), sl: 2 }));
+    sc.push({ t: 'result' });
+    startRun(newRun('learn', id, set.title, sc));
+  }
+  function startWrite(id) {
+    const set = getSet(id);
+    const sc = pick(set.words, 20).map((w) => ({ t: 'type', q: w[1], a: w[0], why: w[2] || '', full: w[2] || '', sw: wkey(w), sl: 2 }));
+    sc.push({ t: 'result' });
+    startRun(newRun('write', id, set.title, sc));
+  }
+  function startListen(id) {
+    const set = getSet(id);
+    const sc = pick(set.words, 20).map((w) => ({ t: 'type', dict: true, audio: w[0], a: w[0], why: w[0] + ' — ' + w[1], sw: wkey(w), sl: 2 }));
+    sc.push({ t: 'result' });
+    startRun(newRun('listen', id, set.title, sc));
+  }
+  function startSetTest(id) {
+    const set = getSet(id), pool = setPool(set);
+    const qs = pick(set.words, 15).map((w, k) => {
+      const kd = ['en-ru', 'ru-en', 'type', 'tf'][k % 4], base = { sw: wkey(w), test: true };
+      if (kd === 'type') return Object.assign({ t: 'type', kick: 'Напишите по-английски', q: w[1], a: w[0], why: w[2] || '', sl: 2 }, base);
+      if (kd === 'tf') {
+        const other = pick(pool.filter((x) => wkey(x) !== wkey(w) && x[1] !== w[1]), 1)[0]; const right = !other || Math.random() < 0.5;
+        return Object.assign({ t: 'choice', kick: 'Верно или нет?', q: w[0] + ' — ' + (right ? w[1] : other[1]), opts: ['Верно', 'Неверно'], a: right ? 'Верно' : 'Неверно', why: w[0] + ' — ' + w[1], sl: 1 }, base);
+      }
+      return Object.assign(qWord(w, pool, true, kd), { sl: 1 }, base);
+    });
+    const sc = shuffle(qs);
+    sc.unshift({ t: 'tintro', title: 'Тест: ' + set.title, text: `${sc.length} ${plural(sc.length, 'вопрос', 'вопроса', 'вопросов')}: выбрать перевод, «верно или нет» и написать слово. Подсказок нет — ответы и разбор покажем в конце.` });
+    sc.push({ t: 'result' });
+    startRun(newRun('settest', id, set.title, sc));
+  }
+  function startFlash(id) {
+    const set = getSet(id), ws = shuffle(set.words);
+    CS = { set: id, q: ws.map(wkey), words: Object.fromEntries(ws.map((w) => [wkey(w), w])), rev: ws.map(() => !!UI.ruFirst), i: 0, flip: false, extra: true, done: 0, ok: 0, again: {} };
+    go('#review');
+  }
+  let MS = null; // подбор пар
+  function startMatch(id) {
+    const set = getSet(id), ws = pick(set.words, 6);
+    if (ws.length < 2) { toast('Нужно хотя бы 2 слова'); return; }
+    const short = (s) => String(s).replace(/\s*\([^)]*\)/g, '').trim();
+    MS = { id, tiles: shuffle(ws.flatMap((w, i) => [{ p: i, t: w[0], en: 1 }, { p: i, t: short(w[1]) }])), sel: null, gone: {}, bad: null, t0: Date.now(), pen: 0, end: 0, n: ws.length };
+    go('#match/' + id);
+  }
+  const MODES = { flash: startFlash, learn: startLearn, write: startWrite, listen: startListen, match: startMatch, test: startSetTest };
 
   /* ---------- ход занятия ---------- */
   function advance() {
@@ -327,8 +418,9 @@
       if (!ok) { S.wrong[s.ref] = { n: ((S.wrong[s.ref] || {}).n || 0) + 1, t: Date.now() }; S.mist[lid] = (S.mist[lid] || 0) + 1; }
       else if (R.kind === 'wrong' || s.retry) delete S.wrong[s.ref];
     }
-    if (!ok && !s.test && !s.retry) {
-      const c = Object.assign({}, s, { retry: true });
+    if (s.sw && R.ref) { if (ok) markWord(R.ref, s.sw, s.sl || 1); else if (s.sl === 2) markDown(R.ref, s.sw); }
+    if (!ok && !s.test && (s.retry || 0) < (R.kind === 'learn' ? 3 : 1)) {
+      const c = Object.assign({}, s, { retry: (s.retry || 0) + 1 });
       if (c.opts) c.opts = shuffle(c.opts); if (c.tiles) c.tiles = shuffle(c.tiles);
       let j = R.i + 1; while (j < R.sc.length && !['sec', 'result'].includes(R.sc[j].t)) j++;
       R.sc.splice(j, 0, c);
@@ -349,6 +441,16 @@
       const lid = s.ref.split('|')[0];
       if (!ok) { S.wrong[s.ref] = { n: ((S.wrong[s.ref] || {}).n || 0) + 1, t: Date.now() }; S.mist[lid] = (S.mist[lid] || 0) + 1; }
     }
+    if (s.sw && R.ref && ok) markWord(R.ref, s.sw, s.sl || 1);
+    save(); advance();
+  }
+  function testType(skip) {
+    const s = R.sc[R.i]; const v = skip ? '' : (($('#ans') || {}).value || '').trim();
+    if (!skip && !v) { toast('Напишите ответ или нажмите «Не знаю»'); return; }
+    const ok = checkText(v, s.a) > 0;
+    R.test.push({ q: s.dict ? '🔊 ' + s.audio : s.q, kick: s.kick, your: v || '—', a: s.a, ok, why: s.why || '' });
+    const d = today(); if (ok) { d.ok++; gain(2); } else d.bad++;
+    if (s.sw && R.ref) { if (ok) markWord(R.ref, s.sw, 2); else markDown(R.ref, s.sw); }
     save(); advance();
   }
   function finalize() {
@@ -364,6 +466,7 @@
       R.added = L.words.filter((w) => addCard(w, L.id, true)).length;
       today().les++; gain(20);
     } else if (R.kind === 'week') { S.tests.push({ t: Date.now(), ok: tOk, n: tN }); gain(15); }
+    else if (R.kind === 'settest') { setProg(R.ref).test = { t: Date.now(), ok: tOk, n: tN }; gain(10); }
     else if (R.kind === 'read') { const o = S.reads[R.ref] || {}; S.reads[R.ref] = { t: Date.now(), ok: Math.max(o.ok || 0, tOk), n: tN }; gain(10); }
     else if (R.kind === 'place') {
       let p = 0; for (const lv of LEVELS) { const q = R.test.filter((x) => x.lv === lv.id); if (q.filter((x) => x.ok).length >= 2) p++; else break; }
@@ -372,7 +475,7 @@
     save();
   }
   function exitRun() {
-    if (!R || R.fin || R.kind !== 'lesson') { const back = R && R.fin ? R : null; R = null; saveRun(); goBackFrom(back); return; }
+    if (!R || R.fin || R.kind !== 'lesson') { const back = R; R = null; saveRun(); goBackFrom(back); return; }
     confirmSheet('Выйти из урока?', 'Прогресс сохранится — продолжить можно с того же места.', 'Выйти', () => { go('#lesson/' + R.ref); });
   }
   function goBackFrom(run) {
@@ -380,6 +483,7 @@
     if (run && run.kind === 'lesson') { go('#course'); return; }
     if (run && run.kind === 'read') { go('#read/' + run.ref); return; }
     if (run && run.kind === 'rule') { go('#rule/' + run.ref); return; }
+    if (run && SET_KINDS.includes(run.kind)) { go('#set/' + run.ref); return; }
     go(S.onboarded ? (UI.from || '#practice') : '#onboard');
   }
 
@@ -410,9 +514,9 @@
       return `<div class="center-col"><div class="sec-ic">${ic('trophy')}</div><h1 class="q-title">${esc(s.title)}</h1><p class="muted">${esc(s.text)}</p></div>` + nextBtn('Начать');
     },
     sec(s) {
-      const st = STEPS[s.n - 1];
-      return `<div class="center-col"><div class="sec-ic">${ic(st.icon)}</div><div class="kicker">Шаг ${s.n} из 6 · ~${st.min} мин</div>
-        <h1 class="q-title">${st.name}</h1><p class="muted">${esc(s.text)}</p></div>` + nextBtn('Поехали');
+      const st = s.title ? { name: s.title, icon: s.icon || 'target' } : STEPS[s.n - 1];
+      return `<div class="center-col"><div class="sec-ic">${ic(st.icon)}</div><div class="kicker">${s.title ? esc(s.kick || '') : `Шаг ${s.n} из 6 · ~${st.min} мин`}</div>
+        <h1 class="q-title">${esc(st.name)}</h1><p class="muted">${esc(s.text)}</p></div>` + nextBtn('Поехали');
     },
     word(s) {
       const w = s.w;
@@ -447,8 +551,10 @@
       const head = s.dict
         ? `<div class="kicker">Диктант${s.retry ? ' · ещё раз' : ''}</div><div class="listen">${bigSay(s.audio)}</div><p class="q-sub center">Напишите по-английски, что услышали</p>`
         : `<div class="kicker">Напишите по-английски${s.retry ? ' · ещё раз' : ''}</div><h2 class="q-title">${esc(s.q)}</h2>`;
+      const last = s.test && R.sc[R.i + 1] && R.sc[R.i + 1].t === 'result';
       return `<div class="q">${head}<input id="ans" class="inp${done ? (st.ok ? ' ok' : ' bad') : ''}" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="done" placeholder="Ваш ответ" value="${esc(st.typed || '')}"${done ? ' disabled' : ''}></div>` +
-        (done ? fb(s) : foot(`<button class="btn ghost" data-a="idk">Не знаю</button><button class="btn pri lg grow" data-a="checkType">Проверить</button>`));
+        (s.test ? foot(`<button class="btn ghost" data-a="testTypeSkip">Не знаю</button><button class="btn pri lg grow" data-a="testType">${last ? 'Завершить' : 'Дальше'}</button>`)
+          : done ? fb(s) : foot(`<button class="btn ghost" data-a="idk">Не знаю</button><button class="btn pri lg grow" data-a="checkType">Проверить</button>`));
     },
     dialog(s) {
       const L = LES[s.l]; const names = [...new Set(L.dialog.map((d) => d[0]))];
@@ -481,11 +587,12 @@
       ${x.ok ? `<div class="rv-a">${esc(x.a)}</div>` : `<div class="rv-y">Ваш ответ: <s>${esc(x.your)}</s></div><div class="rv-a">Правильно: <b>${esc(x.a)}</b></div>`}
       ${!x.ok && x.why ? `<div class="rv-w">${esc(x.why)}</div>` : ''}</div></div>`).join('')}</div>`;
   }
+  const confettiHTML = () => `<div class="confetti" aria-hidden="true">${Array.from({ length: 18 }, (_, i) => `<i style="--x:${(i * 37) % 100}%;--d:${(i % 6) * 0.12}s"></i>`).join('')}</div>`;
   function resultHTML() {
     const tOk = R.test.filter((x) => x.ok).length, tN = R.test.length;
     const mins = Math.max(1, Math.round((R.sec || 0) / 60));
     const statRow = (items) => `<div class="res-stats">${items.map(([v, t]) => `<div><b>${v}</b><span>${t}</span></div>`).join('')}</div>`;
-    const confetti = `<div class="confetti" aria-hidden="true">${Array.from({ length: 18 }, (_, i) => `<i style="--x:${(i * 37) % 100}%;--d:${(i % 6) * 0.12}s;--c:${i % 3}"></i>`).join('')}</div>`;
+    const confetti = confettiHTML();
     if (R.kind === 'place') {
       const sg = LV[R.sugg];
       return `<div class="center-col">${confetti}<div class="kicker">Тест уровня</div><h1 class="q-title">Рекомендуем: ${sg.name}</h1><p class="muted">${sg.title}. ${esc(sg.desc)}</p>
@@ -502,19 +609,21 @@
         ${tN ? `<details class="rv-wrap" open><summary>Ответы мини-теста</summary>${reviewList(R.test)}</details>` : ''}</div>` +
         foot(`<button class="btn ghost" data-a="runDone">К урокам</button>${nx ? `<button class="btn pri lg grow" data-a="nextLesson" data-id="${nx.id}">Следующий урок</button>` : `<button class="btn pri lg grow" data-a="runDone">Готово</button>`}`);
     }
-    if (R.kind === 'week' || R.kind === 'read') {
+    if (R.kind === 'week' || R.kind === 'read' || R.kind === 'settest') {
       const pct = tN ? Math.round((tOk / tN) * 100) : 0;
       const msg = pct >= 90 ? 'Блестяще!' : pct >= 70 ? 'Хороший результат!' : pct >= 50 ? 'Неплохо — есть над чем поработать' : 'Стоит повторить материал';
       return `<div class="center-col">${pct >= 70 ? confetti : ''}<div class="score-ring">${ring(pct / 100, tOk + '/' + tN, 'верно', 120)}</div>
-        <h1 class="q-title">${msg}</h1><p class="muted">${R.kind === 'week' ? 'Тест недели' : '«' + esc(R.title) + '» — вопросы к тексту'}</p>
+        <h1 class="q-title">${msg}</h1><p class="muted">${R.kind === 'week' ? 'Тест недели' : R.kind === 'settest' ? 'Тест по набору «' + esc(R.title) + '»' : '«' + esc(R.title) + '» — вопросы к тексту'}</p>
         <h3 class="h-sub left">Ответы</h3>${reviewList(R.test)}</div>` +
         foot(`${R.kind === 'week' && tOk < tN ? '<button class="btn ghost" data-a="goWrong">Работа над ошибками</button>' : ''}<button class="btn pri lg grow" data-a="runDone">Готово</button>`);
     }
     const acc = R.ok + R.bad ? Math.round((R.ok / (R.ok + R.bad)) * 100) : 100;
     return `<div class="center-col">${acc >= 70 ? confetti : ''}<div class="score-ring">${ring(acc / 100, acc + '%', 'с первого раза', 120)}</div>
       <h1 class="q-title">${acc >= 80 ? 'Отлично потренировались!' : 'Тренировка завершена'}</h1><p class="muted">${esc(R.title)}</p>
-      ${statRow([[R.ok, 'верно сразу'], [R.bad, 'с ошибкой'], ['+' + (R.xp || 0), 'очков']])}</div>` +
-      foot(`<button class="btn pri lg block" data-a="runDone">Готово</button>`);
+      ${statRow([[R.ok, 'верно сразу'], [R.bad, 'с ошибкой'], ['+' + (R.xp || 0), 'очков']])}
+      ${SET_KINDS.includes(R.kind) && getSet(R.ref) ? (() => { const st = setStats(getSet(R.ref)); return `<div class="note">В наборе выучено ${st.known} из ${st.n}${st.known < st.n ? '. Ещё один круг — и будет больше.' : ' — весь набор! 🎉'}</div>`; })() : ''}</div>` +
+      foot(SET_KINDS.includes(R.kind) ? `<button class="btn ghost" data-a="runDone">К набору</button><button class="btn pri lg grow" data-a="mode" data-m="${R.kind}" data-id="${esc(R.ref)}">Ещё круг</button>`
+        : `<button class="btn pri lg block" data-a="runDone">Готово</button>`);
   }
 
   function ruleHTML(L) {
@@ -649,6 +758,7 @@
     return {
       top: topBar('Практика'), lvl: pl,
       html: `<div class="list">
+          <a class="row card" href="#" data-a="goSets"><span class="row-ic">${ic('cards')}</span><span class="row-main"><span class="row-t">Наборы слов</span><span class="row-s">Свои и готовые: заучивание, письмо, на слух, подбор пар, тест</span></span>${ic('chev')}</a>
           <a class="row card" href="#" data-a="goWrong"><span class="row-ic t2">${ic('repeat')}</span><span class="row-main"><span class="row-t">Работа над ошибками</span><span class="row-s">${wrongN ? `${wrongN} ${plural(wrongN, 'задание', 'задания', 'заданий')}, где вы ошиблись` : 'Пока ошибок нет'}</span></span>${wrongN ? `<span class="badge">${wrongN}</span>` : ''}${ic('chev')}</a>
           <a class="row card" href="#" data-a="goWeek"><span class="row-ic t3">${ic('trophy')}</span><span class="row-main"><span class="row-t">Тест недели</span><span class="row-s">${wk.length ? `10 вопросов по пройденному${last ? ` · прошлый раз ${last.ok}/${last.n}` : ''}` : 'Откроется после первого урока'}</span></span>${ic('chev')}</a>
           <a class="row card" href="#" data-a="place"><span class="row-ic t4">${ic('compass')}</span><span class="row-main"><span class="row-t">Тест уровня</span><span class="row-s">12 вопросов — подскажет, с какого уровня начать</span></span>${ic('chev')}</a></div>
@@ -697,7 +807,76 @@
     };
   }
 
+  function setRow(s) {
+    const st = setStats(s);
+    return `<a class="row card" href="#set/${esc(s.id)}"><span class="row-ic emo">${s.icon || '📝'}</span><span class="row-main"><span class="row-t">${esc(s.title)}</span>
+      <span class="row-s">${st.n} ${plural(st.n, 'слово', 'слова', 'слов')} · выучено ${st.known}</span><span class="mini-bar"><i style="width:${st.n ? (st.known / st.n) * 100 : 0}%"></i></span></span>${ic('chev')}</a>`;
+  }
+  function setsHTML() {
+    const mine = Object.values(S.sets).sort((a, b) => (b.created || 0) - (a.created || 0));
+    const ls = ALL.filter((l) => S.lessons[l.id]).map((l) => getSet('l-' + l.id));
+    return `<p class="muted sm">Свои списки слов и готовые подборки. В каждом наборе 6 режимов: карточки, заучивание, письмо, на слух, подбор пар и тест.</p>
+      <button class="btn pri block" data-a="newSet">${ic('plus')}Новый набор</button>
+      ${mine.length ? `<h3 class="h-sec">Мои наборы</h3><div class="list">${mine.map((s) => setRow(getSet(s.id))).join('')}</div>` : ''}
+      <h3 class="h-sec">Готовые наборы</h3><div class="list">${SETS.map(setRow).join('')}</div>
+      <h3 class="h-sec">Слова уроков</h3>${ls.length ? `<div class="list">${ls.map(setRow).join('')}</div>` : '<p class="muted sm">Появятся здесь после первого урока.</p>'}`;
+  }
+  const cardsTabs = () => `<div class="seg"><button class="${UI.ct !== 'sets' ? 'on' : ''}" data-a="ct" data-v="srs">Повторение</button><button class="${UI.ct === 'sets' ? 'on' : ''}" data-a="ct" data-v="sets">Наборы слов</button></div>`;
+
+  function vSet(id) {
+    const set = getSet(id); if (!set) return { redirect: '#cards' };
+    UI.ct = 'sets';
+    const st = setStats(set), p = S.setp[id] || { m: {} };
+    const inSrs = set.words.filter((w) => S.cards[wkey(w)]).length;
+    const M = [['flash', 'Карточки', 'Листать и переворачивать', 'cards'], ['learn', 'Заучивание', 'Выбор, потом письмо — до верного ответа', 'target'],
+      ['write', 'Письмо', 'Видите перевод — пишете слово', 'text'], ['listen', 'На слух', 'Слушаете — пишете', 'vol'],
+      ['match', 'Подбор пар', p.best ? 'Рекорд ' + fmtT(p.best) : 'Игра на время', 'bolt'], ['test', 'Тест', p.test ? `Прошлый раз ${p.test.ok}/${p.test.n}` : 'Смешанные вопросы', 'trophy']];
+    const nw = st.n - st.known - st.fam;
+    return {
+      top: topBar(set.title, { back: '#cards' }),
+      html: `<div class="card set-head"><span class="set-ic">${set.icon || '📝'}</span><div class="row-main"><div class="lvl-n">${esc(set.title)}</div><div class="muted sm">${st.n} ${plural(st.n, 'слово', 'слова', 'слов')}${set.desc ? ' · ' + esc(set.desc) : ''}</div></div></div>
+        <div class="card"><div class="c-h"><b>Выучено ${st.known} из ${st.n}</b><span class="muted sm">«выучено» — написали без ошибки</span></div>
+          <div class="dist" role="img" aria-label="Выучено ${st.known}, знакомо ${st.fam}, новых ${nw}">${[[nw, 'new'], [st.fam, 'learn'], [st.known, 'known']].map(([n, c]) => (n ? `<i class="d-${c}" style="flex:${n}"></i>` : '')).join('')}</div>
+          <div class="legend"><span><i class="d-new"></i>Новые ${nw}</span><span><i class="d-learn"></i>Знакомые ${st.fam}</span><span><i class="d-known"></i>Выучено ${st.known}</span></div></div>
+        <div class="modes">${M.map(([m, t, s, i]) => `<button class="mode" data-a="mode" data-m="${m}" data-id="${esc(id)}"${m === 'match' && st.n < 2 ? ' disabled' : ''}><span class="tile-ic c1">${ic(i)}</span><b>${t}</b><small>${esc(s)}</small></button>`).join('')}</div>
+        <div class="card sgroup"><div class="srow"><span>В карточках сначала</span><div class="seg sm"><button class="${UI.ruFirst ? '' : 'on'}" data-a="ruFirst" data-v="0">English</button><button class="${UI.ruFirst ? 'on' : ''}" data-a="ruFirst" data-v="1">Русский</button></div></div>
+          <a class="srow link" href="#" data-a="toSrs" data-id="${esc(id)}"><span>${inSrs >= st.n ? 'Все слова уже в повторении по расписанию' : 'Добавить в повторение по расписанию' + (inSrs ? ` (ещё ${st.n - inSrs})` : '')}</span>${ic('repeat')}</a>
+          ${set.mine ? `<a class="srow link" href="#setedit/${esc(id)}"><span>Изменить набор</span>${ic('text')}</a><a class="srow link danger" href="#" data-a="delSet" data-id="${esc(id)}"><span>Удалить набор</span>${ic('trash')}</a>` : ''}</div>
+        <h3 class="h-sec">Слова</h3><div class="list">${set.words.map((w) => { const m = p.m[wkey(w)] || 0; return `<div class="row card"><span class="dot ${m >= 2 ? 'd-known' : m ? 'd-learn' : 'd-new'}"></span><span class="row-main"><span class="row-t">${esc(w[0])}</span><span class="row-s">${esc(w[1])}</span>${w[2] ? `<span class="row-s ex">${esc(w[2])}</span>` : ''}</span>${sayBtn(w[0], false, 'sm')}</div>`; }).join('')}</div>`
+    };
+  }
+  const countMsg = (n) => (n ? `Распознано ${n} ${plural(n, 'слово', 'слова', 'слов')}` : 'Пока ни одного слова');
+  function vSetEdit(id) {
+    const set = id === 'new' ? { title: '', words: [] } : S.sets[id]; if (!set) return { redirect: '#cards' };
+    const back = id === 'new' ? '#cards' : '#set/' + id;
+    const txt = set.words.map((w) => [w[0], w[1], w[2]].filter(Boolean).join(' — ')).join('\n');
+    return {
+      top: topBar(id === 'new' ? 'Новый набор' : 'Изменить набор', { back }),
+      html: `<div class="card form"><label>Название<input class="inp" id="st-title" value="${esc(set.title)}" placeholder="Например, «Поездка в Турцию»" autocomplete="off"></label>
+          <label>Слова — по одному на строке<textarea class="inp ta" id="st-words" rows="10" autocapitalize="off" spellcheck="false" placeholder="journey — путешествие&#10;luggage — багаж — Where is my luggage?&#10;to book — бронировать">${esc(txt)}</textarea></label>
+          <div class="muted sm" id="st-count">${countMsg(parseWords(txt).length)}</div></div>
+        <div class="note">Формат строки: <b>слово — перевод</b>, третьей частью можно добавить пример. Разделитель — тире, «;», «=» или табуляция: так вставляются два столбца из Excel или Google Таблиц. Если перевод стоит первым, поменяем местами сами.</div>
+        <div class="sticky-cta"><a class="btn ghost" href="${back}">Отмена</a><button class="btn pri lg grow" data-a="saveSet" data-id="${esc(id)}">Сохранить</button></div>`
+    };
+  }
+  function vMatch(id) {
+    if (!MS || MS.id !== id) return { redirect: '#set/' + id };
+    const p = setProg(id);
+    if (MS.end) {
+      const t = MS.end - MS.t0 + MS.pen;
+      return { imm: 1, html: `<div class="run"><div class="run-top"><a class="icb" href="#set/${esc(id)}" aria-label="Закрыть">${ic('x')}</a><div class="prog"><i style="width:100%"></i></div></div>
+        <div class="run-body"><div class="center-col">${MS.rec ? confettiHTML() : ''}<div class="sec-ic">${ic('bolt')}</div><div class="kicker">Подбор пар</div><h1 class="q-title big-t">${fmtT(t)}</h1>
+        <p class="muted">${MS.rec ? 'Новый рекорд! 🎉' : 'Рекорд: ' + fmtT(p.best)}${MS.pen ? ` · штраф за ошибки +${MS.pen / 1000} с` : ''}</p></div></div>
+        ${foot(`<a class="btn ghost" href="#set/${esc(id)}">К набору</a><button class="btn pri lg grow" data-a="mode" data-m="match" data-id="${esc(id)}">Ещё раз</button>`)}</div>` };
+    }
+    const left = MS.n - Object.keys(MS.gone).length / 2;
+    return { imm: 1, html: `<div class="run"><div class="run-top"><a class="icb" href="#set/${esc(id)}" aria-label="Закрыть">${ic('x')}</a><div class="mt-time" id="mt-time">${fmtT(Date.now() - MS.t0 + MS.pen)}</div><span class="run-n">осталось ${left}</span></div>
+      <div class="run-body"><p class="muted center sm">Соедините слово и перевод. Ошибка — плюс 1 секунда.</p>
+      <div class="mgrid">${MS.tiles.map((t, i) => `<button class="mtile${MS.gone[i] ? ' gone' : ''}${MS.sel === i ? ' sel' : ''}${MS.bad && MS.bad.includes(i) ? ' bad' : ''}${t.en ? ' en' : ''}" data-a="mt" data-i="${i}"${MS.gone[i] ? ' disabled' : ''}>${esc(t.t)}</button>`).join('')}</div></div></div>` };
+  }
+
   function vCards() {
+    if (UI.ct === 'sets') return { top: topBar('Карточки'), html: cardsTabs() + setsHTML() };
     const keys = Object.keys(S.cards); const due = dueCards().length;
     const cnt = { new: 0, learn: 0, known: 0 }; keys.forEach((k) => cnt[cardStat(S.cards[k])]++);
     const tomorrow = keys.filter((k) => S.cards[k].due > Date.now() && S.cards[k].due < sod() + 2 * DAY).length;
@@ -705,7 +884,7 @@
     const stName = { new: 'новое', learn: 'изучаю', known: 'выучено' };
     return {
       top: topBar('Карточки'),
-      html: `<div class="card deck">
+      html: `${cardsTabs()}<div class="card deck">
           ${due ? `<div class="deck-n">${due}</div><div class="deck-t">${plural(due, 'карточка ждёт', 'карточки ждут', 'карточек ждут')} повторения</div><button class="btn pri lg block" data-a="review">Повторить</button>`
           : keys.length ? `<div class="deck-n">✓</div><div class="deck-t">На сегодня всё повторено</div><div class="muted sm">${tomorrow ? `Завтра — ${tomorrow} ${plural(tomorrow, 'карточка', 'карточки', 'карточек')}` : 'Следующие карточки — позже'}</div><button class="btn soft block" data-a="reviewExtra">Потренироваться ещё</button>`
           : `<div class="deck-n">🃏</div><div class="deck-t">Карточек пока нет</div><div class="muted sm">Слова попадут сюда после первого урока. Или добавьте своё слово.</div>`}</div>
@@ -726,26 +905,31 @@
     CS = { q: keys, rev: keys.map((k) => S.cards[k].box >= 2 && Math.random() < 0.4), i: 0, flip: false, extra: !!extra, done: 0, ok: 0, again: {} };
     go('#review');
   }
+  const cardOf = (k) => {
+    if (!CS || !CS.set) return S.cards[k];
+    const w = CS.words[k]; return w && { en: w[0], ru: w[1], ex: w[2] || '', exr: w[3] || '', tip: w[4] || '', box: 0 };
+  };
   function vReview() {
     if (!CS) return { redirect: '#cards' };
-    const tot = CS.q.length;
+    const tot = CS.q.length, exitTo = CS.set ? '#set/' + CS.set : '#cards';
     if (CS.i >= tot) {
-      return { imm: 1, html: `<div class="run"><div class="run-top"><a class="icb" href="#cards">${ic('x')}</a><div class="prog"><i style="width:100%"></i></div></div><div class="run-body"><div class="center-col">
+      const msg = CS.set ? `Знали сразу ${CS.ok} из ${CS.done}. Слова, отмеченные «Ещё учу», закрепите в «Заучивании».` : `С первого раза вспомнили ${CS.ok} из ${CS.done}. ${CS.extra ? 'Это была тренировка — расписание не менялось.' : 'Следующий показ каждой карточки уже запланирован.'}`;
+      return { imm: 1, html: `<div class="run"><div class="run-top"><a class="icb" href="${exitTo}">${ic('x')}</a><div class="prog"><i style="width:100%"></i></div></div><div class="run-body"><div class="center-col">
         <div class="score-ring">${ring(CS.done ? CS.ok / CS.done : 1, String(CS.done), plural(CS.done, 'карточка', 'карточки', 'карточек'), 120)}</div><h1 class="q-title">Повторение завершено</h1>
-        <p class="muted">С первого раза вспомнили ${CS.ok} из ${CS.done}. ${CS.extra ? 'Это была тренировка — расписание не менялось.' : 'Следующий показ каждой карточки уже запланирован.'}</p></div></div>
-        ${foot('<a class="btn pri lg block" href="#cards">Готово</a>')}</div>` };
+        <p class="muted">${msg}</p></div></div>
+        ${foot(`<a class="btn pri lg block" href="${exitTo}">Готово</a>`)}</div>` };
     }
-    const k = CS.q[CS.i], c = S.cards[k], rev = CS.rev[CS.i];
+    const k = CS.q[CS.i], c = cardOf(k), rev = CS.rev[CS.i];
     if (!c) { CS.i++; return vReview(); }
     const front = rev ? `<div class="fc-k">Как по-английски?</div><div class="fc-w ru">${esc(c.ru)}</div>` : `<div class="fc-k">Что значит?</div><div class="fc-w">${esc(c.en)}</div><div class="say-row">${sayBtn(c.en)}</div>`;
     const back = `<div class="fc-w">${esc(c.en)}</div><div class="say-row">${sayBtn(c.en)}${sayBtn(c.en, true)}</div><div class="fc-ru">${esc(c.ru)}</div>
       ${c.ex ? `<div class="ex-box"><div class="ex-en">${esc(c.ex)}</div><div class="ex-ru">${esc(c.exr)}</div></div>` : ''}${c.tip ? `<div class="tip"><span>💡</span><span>${esc(c.tip)}</span></div>` : ''}`;
-    const G = [['Не помню', 'g0'], ['Трудно', 'g1'], ['Помню', 'g2'], ['Легко', 'g3']];
+    const G = CS.set ? [['Ещё учу', 'g0', 0], ['Знаю', 'g2', 2]] : [['Не помню', 'g0', 0], ['Трудно', 'g1', 1], ['Помню', 'g2', 2], ['Легко', 'g3', 3]];
     return {
       imm: 1,
-      html: `<div class="run"><div class="run-top"><a class="icb" href="#cards" aria-label="Закрыть">${ic('x')}</a><div class="prog"><i style="width:${(CS.i / tot) * 100}%"></i></div><span class="run-n">${CS.i + 1}/${tot}</span></div>
+      html: `<div class="run"><div class="run-top"><a class="icb" href="${exitTo}" aria-label="Закрыть">${ic('x')}</a><div class="prog"><i style="width:${(CS.i / tot) * 100}%"></i></div><span class="run-n">${CS.i + 1}/${tot}</span></div>
         <div class="run-body"><div class="flip${CS.flip ? ' on' : ''}" data-a="flip"><div class="face front">${front}<div class="fc-hint">Нажмите, чтобы перевернуть</div></div><div class="face back">${back}</div></div></div>
-        ${foot(CS.flip ? `<div class="grades">${G.map(([t, cl], g) => `<button class="gbtn ${cl}" data-a="grade" data-g="${g}"><b>${t}</b><small>${CS.extra ? '&nbsp;' : ivlTxt(c, g)}</small></button>`).join('')}</div>`
+        ${foot(CS.flip ? `<div class="grades${CS.set ? ' two' : ''}">${G.map(([t, cl, g]) => `<button class="gbtn ${cl}" data-a="grade" data-g="${g}"><b>${t}</b><small>${CS.extra ? '&nbsp;' : ivlTxt(c, g)}</small></button>`).join('')}</div>`
           : '<button class="btn pri lg block" data-a="flip">Показать ответ</button>')}</div>`
     };
   }
@@ -842,7 +1026,7 @@
     const pct = R.sc.length > 1 ? (R.i / (R.sc.length - 1)) * 100 : 0;
     let lab = '';
     if (R.kind === 'lesson') { let n = 0; for (let j = R.i; j >= 0; j--) if (R.sc[j].t === 'sec') { n = R.sc[j].n; break; } lab = n ? `${n}/6 · ${STEPS[n - 1].name}` : ''; }
-    else { const qs = R.sc.filter((x) => x.t !== 'result' && x.t !== 'tintro'); const k = qs.indexOf(s); lab = k >= 0 ? `${k + 1}/${qs.length}` : ''; }
+    else { const qs = R.sc.filter((x) => !['result', 'tintro', 'sec'].includes(x.t)); const k = qs.indexOf(s); lab = k >= 0 ? `${k + 1}/${qs.length}` : ''; }
     const lvl = R.kind === 'lesson' || R.kind === 'rule' ? LES[R.ref].level : R.kind === 'read' ? READ[R.ref].level : null;
     return {
       imm: 1, lvl,
@@ -855,7 +1039,7 @@
   function route() { const h = decodeURIComponent(location.hash.slice(1)) || 'home'; const i = h.indexOf('/'); return i < 0 ? { name: h, arg: '' } : { name: h.slice(0, i), arg: h.slice(i + 1) }; }
   const go = (h) => { if (location.hash === h) render(); else location.hash = h; };
   const TABS = [['home', 'Главная', 'home'], ['course', 'Уроки', 'book'], ['cards', 'Карточки', 'cards'], ['practice', 'Практика', 'target'], ['stats', 'Прогресс', 'chart']];
-  const VIEWS = { home: vHome, course: vCourse, lesson: vLesson, cards: vCards, review: vReview, practice: vPractice, rule: vRule, read: vRead, stats: vStats, settings: vSettings, onboard: vOnboard, run: vRun };
+  const VIEWS = { home: vHome, course: vCourse, lesson: vLesson, cards: vCards, review: vReview, practice: vPractice, rule: vRule, read: vRead, stats: vStats, settings: vSettings, onboard: vOnboard, run: vRun, set: vSet, setedit: vSetEdit, match: vMatch };
   let lastRoute = '', lastTab = 'home';
   function render() {
     const r = route();
@@ -870,7 +1054,7 @@
     const view = $('#view');
     view.innerHTML = out.html;
     if (key !== lastRoute) { view.classList.remove('v-in'); void view.offsetWidth; view.classList.add('v-in'); if (r.name !== 'run') window.scrollTo(0, 0); }
-    const tab = TABS.find((t) => t[0] === r.name) ? r.name : ['lesson'].includes(r.name) ? 'course' : ['rule', 'read'].includes(r.name) ? 'practice' : r.name === 'settings' ? 'home' : lastTab;
+    const tab = TABS.find((t) => t[0] === r.name) ? r.name : ['lesson'].includes(r.name) ? 'course' : ['rule', 'read'].includes(r.name) ? 'practice' : ['set', 'setedit', 'match'].includes(r.name) ? 'cards' : r.name === 'settings' ? 'home' : lastTab;
     lastTab = tab;
     const due = dueCards().length;
     $('#nav').innerHTML = out.imm ? '' : TABS.map(([id, t, icn]) => `<a href="#${id}" class="${id === tab ? 'on' : ''}">${ic(icn)}<span>${t}</span>${id === 'cards' && due ? `<em>${due > 99 ? '99+' : due}</em>` : ''}</a>`).join('');
@@ -889,7 +1073,7 @@
       const fbEl = document.querySelector('.fb'); if (fbEl) fbEl.scrollIntoView({ block: 'nearest' });
     }
     if (r.name === 'review' && CS && CS.i < CS.q.length) {
-      const k = CS.q[CS.i]; const c = S.cards[k];
+      const k = CS.q[CS.i]; const c = cardOf(k);
       if (c && CS.auto !== CS.i + ':' + CS.flip && (!CS.rev[CS.i] || CS.flip)) { CS.auto = CS.i + ':' + CS.flip; if (!CS.flip || CS.rev[CS.i]) setTimeout(() => say(c.en, { quiet: true }), 200); }
     }
   }
@@ -920,6 +1104,41 @@
       R.st.sel = i; answer(s.opts[i] === s.a, { your: s.opts[i] });
     },
     testNext: () => testNext(),
+    testType: () => testType(false),
+    testTypeSkip: () => testType(true),
+    ct: (d) => { UI.ct = d.v; render(); },
+    goSets: () => { UI.ct = 'sets'; go('#cards'); },
+    newSet: () => go('#setedit/new'),
+    mode: (d) => { const set = getSet(d.id); if (!set || !set.words.length) { toast('В наборе нет слов'); return; } MODES[d.m](d.id); },
+    ruFirst: (d) => { UI.ruFirst = d.v === '1'; render(); },
+    saveSet: (d) => {
+      const title = $('#st-title').value.trim() || 'Мой набор'; const words = parseWords($('#st-words').value);
+      if (!words.length) { toast('Добавьте хотя бы одно слово: «слово — перевод»'); return; }
+      const id = d.id === 'new' ? 'my-' + Date.now().toString(36) : d.id; const old = S.sets[id];
+      S.sets[id] = { id, title, icon: old ? old.icon : '📝', words, created: old ? old.created : Date.now() };
+      save(); toast(d.id === 'new' ? 'Набор создан' : 'Сохранено'); go('#set/' + id);
+    },
+    delSet: (d) => confirmSheet('Удалить набор?', `«${(S.sets[d.id] || {}).title || ''}» и его прогресс удалятся. Слова, добавленные в повторение, останутся.`, 'Удалить', () => { delete S.sets[d.id]; delete S.setp[d.id]; save(); UI.ct = 'sets'; go('#cards'); }, true),
+    toSrs: (d) => {
+      const set = getSet(d.id); const n = set.words.filter((w) => addCard([w[0], w[1], w[2] || '', w[3] || '', w[4] || ''], set.lesson || set.id, false)).length;
+      save(); toast(n ? `${n} ${plural(n, 'слово добавлено', 'слова добавлены', 'слов добавлены')} — повторим сегодня` : 'Все слова уже в повторении'); render();
+    },
+    mt: (d) => {
+      if (!MS || MS.end) return; const i = +d.i; if (MS.gone[i]) return;
+      if (MS.sel == null || MS.sel === i) { MS.sel = MS.sel === i ? null : i; render(); return; }
+      const a = MS.tiles[MS.sel], b = MS.tiles[i];
+      if (a.p === b.p && a.en !== b.en) {
+        MS.gone[MS.sel] = MS.gone[i] = 1; MS.sel = null; buzz(true); say((a.en ? a : b).t, { quiet: true });
+        if (Object.keys(MS.gone).length === MS.tiles.length) {
+          MS.end = Date.now(); const t = MS.end - MS.t0 + MS.pen; const p = setProg(MS.id);
+          MS.rec = !p.best || t < p.best; if (MS.rec) p.best = t; p.games = (p.games || 0) + 1; gain(5); save();
+        }
+      } else {
+        MS.bad = [MS.sel, i]; MS.sel = null; MS.pen += 1000; buzz(false);
+        setTimeout(() => { if (MS) { MS.bad = null; if (route().name === 'match') render(); } }, 450);
+      }
+      render();
+    },
     tile: (d) => { R.st.placed = R.st.placed || []; R.st.placed.push(+d.ti); render(); },
     unplace: (d) => { R.st.placed.splice(+d.k, 1); render(); },
     clearOrder: () => { R.st.placed = []; render(); },
@@ -956,9 +1175,9 @@
     grade: (d) => {
       const g = +d.g; const k = CS.q[CS.i];
       if (!CS.again[k]) { CS.done++; if (g >= 2) CS.ok++; }
-      if (!CS.extra) grade(k, g);
+      if (CS.set) { if (g >= 2) markWord(CS.set, k, 1); } else if (!CS.extra) grade(k, g);
       today().cards++; gain(1);
-      if (g === 0 && (CS.again[k] || 0) < 2) { CS.again[k] = (CS.again[k] || 0) + 1; CS.q.push(k); CS.rev.push(false); }
+      if (g === 0 && (CS.again[k] || 0) < (CS.set ? 3 : 2)) { CS.again[k] = (CS.again[k] || 0) + 1; CS.q.push(k); CS.rev.push(CS.set ? !!UI.ruFirst : false); }
       CS.i++; CS.flip = false; save(); render();
     },
     addWord: () => {
@@ -1006,6 +1225,7 @@
     if (t.id === 'ans' && R) R.st.typed = t.value;
     if (t.id === 'cq') { const q = t.value.trim().toLowerCase(); document.querySelectorAll('#clist .wrow').forEach((r) => (r.hidden = q && !r.dataset.q.includes(q))); }
     if (t.dataset.mine != null) { const st = UI.rd[route().arg]; if (st) st.mine[t.dataset.mine] = t.value; }
+    if (t.id === 'st-words') { const c = $('#st-count'); if (c) c.textContent = countMsg(parseWords(t.value).length); }
     if (t.id === 'rate') { S.rate = +t.value; $('#rateV').textContent = S.rate.toFixed(2).replace(/0$/, '') + '×'; save(); }
   });
   document.addEventListener('change', (e) => {
@@ -1030,7 +1250,7 @@
       if (e.key === 'Enter') {
         e.preventDefault();
         if (R.st.done && !s.test) return advance();
-        if (s.t === 'type') return A.checkType();
+        if (s.t === 'type') return s.test ? testType(false) : A.checkType();
         if (s.t === 'order' && (R.st.placed || []).length) return A.checkOrder();
         if (s.test) { if (R.st.sel != null) testNext(); return; }
         if (!['choice', 'order', 'type'].includes(s.t)) return advance();
@@ -1047,7 +1267,8 @@
   /* ---------- время занятий ---------- */
   let lastAct = Date.now();
   ['pointerdown', 'keydown', 'scroll', 'touchstart'].forEach((ev) => addEventListener(ev, () => (lastAct = Date.now()), { passive: true, capture: true }));
-  const STUDY = ['run', 'review', 'rule', 'read', 'lesson', 'cards'];
+  const STUDY = ['run', 'review', 'rule', 'read', 'lesson', 'cards', 'set', 'match'];
+  setInterval(() => { if (MS && !MS.end) { const el = document.getElementById('mt-time'); if (el) el.textContent = fmtT(Date.now() - MS.t0 + MS.pen); } }, 100);
   setInterval(() => {
     if (document.visibilityState !== 'visible' || Date.now() - lastAct > 90000) return;
     const r = route().name; if (!STUDY.includes(r)) return;
@@ -1063,5 +1284,5 @@
   applyTheme();
   render();
   if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) navigator.serviceWorker.register('sw.js').catch(() => {});
-  window.__stupeni = { get S() { return S; }, get R() { return R; }, A, render, LES, ALL, buildLesson, checkText, norm };
+  window.__stupeni = { get S() { return S; }, get R() { return R; }, get MS() { return MS; }, get CS() { return CS; }, A, render, LES, ALL, buildLesson, checkText, norm, parseWords, getSet, setStats };
 })();
