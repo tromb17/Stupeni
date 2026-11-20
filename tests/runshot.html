@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ступени — снимок занятия</title>
+  <!-- Открывает урок и доводит до нужного экрана: runshot.html?id=a1-3&to=choice&wrong=1 (to — тип экрана или result/review) -->
+  <script>try { localStorage.clear(); localStorage.setItem('stupeni.v1', JSON.stringify({ v: 1, onboarded: true, level: 'a1', goal: 20, theme: new URLSearchParams(location.search).get('theme') || 'auto' })); } catch (e) {} history.replaceState(null, '', location.pathname + location.search);</script>
+  <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&display=swap">
+  <link rel="stylesheet" href="../css/app.css">
+</head>
+<body>
+  <div id="app"><header id="top"></header><main id="view"></main><nav id="nav"></nav></div>
+  <div id="sheet"></div><div id="toast"></div>
+  <script src="../js/content/a1.js"></script><script src="../js/content/a2.js"></script><script src="../js/content/b1.js"></script><script src="../js/content/b2.js"></script><script src="../js/content/reading.js"></script>
+  <script src="../js/app.js"></script>
+  <script>
+  (function () {
+    const q = new URLSearchParams(location.search), T = window.__stupeni, A = T.A;
+    const to = q.get('to') || 'word', nth = +(q.get('n') || 1);
+    const nav = (h) => { history.replaceState(null, '', h); T.render(); };
+    if (to === 'review') {
+      A.lesson({ id: q.get('id') || 'a1-1' }); T.R.sc.forEach((s) => s.t === 'word' && 0);
+      T.LES[q.get('id') || 'a1-1'].words.forEach((w) => (T.S.cards[w[0]] = { en: w[0], ru: w[1], ex: w[2], exr: w[3], tip: w[4], l: 'x', box: 1, due: 0, n: 1, lap: 0, add: 1 }));
+      A.runDone(); A.review(); nav('#review'); if (q.get('flip')) A.flip(); return;
+    }
+    A.lesson({ id: q.get('id') || 'a1-1' }); nav('#run');
+    let seen = 0, g = 0;
+    while (g++ < 200) {
+      const R = T.R, s = R.sc[R.i];
+      if (s.t === to && ++seen >= nth) break;
+      if (s.t === 'result') break;
+      if (s.t === 'choice') { A.pick({ i: s.opts.indexOf(s.a) }); s.test ? A.testNext() : A.next(); }
+      else if (s.t === 'order') { const want = s.a.replace(/[.?!]+$/, '').replace(/,/g, '').split(/\s+/); const used = []; R.st.placed = want.map((w) => { const j = s.tiles.findIndex((t, k) => t === w && !used.includes(k)); used.push(j); return j; }); A.checkOrder(); A.next(); }
+      else if (s.t === 'type') { document.getElementById('ans').value = s.a; A.checkType(); A.next(); }
+      else A.next();
+    }
+    const s = T.R.sc[T.R.i];
+    if (q.get('wrong') && s.t === 'choice') A.pick({ i: s.opts.findIndex((o) => o !== s.a) });
+    if (q.get('right') && s.t === 'choice') A.pick({ i: s.opts.indexOf(s.a) });
+    if (q.get('half') && s.t === 'order') { T.R.st.placed = [0, 1]; T.render(); }
+    if (q.get('tr') && s.t === 'dialog') A.tr();
+  })();
+  </script>
+</body>
+</html>

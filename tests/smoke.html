@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ступени — проверка</title>
+  <script>try { localStorage.clear(); } catch (e) {} location.hash = '';</script>
+  <link rel="stylesheet" href="../css/app.css">
+</head>
+<body>
+  <div id="app"><header id="top"></header><main id="view"></main><nav id="nav"></nav></div>
+  <div id="sheet"></div><div id="toast"></div>
+  <script src="../js/content/a1.js"></script>
+  <script src="../js/content/a2.js"></script>
+  <script src="../js/content/b1.js"></script>
+  <script src="../js/content/b2.js"></script>
+  <script src="../js/content/reading.js"></script>
+  <script src="../js/app.js"></script>
+  <script>
+  /* Проходит приложение по шагам и пишет итог в body[data-res]. Открывать Edge без окна с --dump-dom. */
+  (function () {
+    const T = window.__stupeni, A = T.A, out = [], fail = [];
+    const ok = (c, m) => { (c ? out : fail).push(m); };
+    const view = () => document.getElementById('view').innerHTML;
+    const nav = (h) => { history.replaceState(null, '', h); T.render(); };
+    try {
+      ok(/Английский по ступенькам/.test(view()), 'знакомство на первом запуске');
+      A.ob({ n: 1 }); ok(/Какой у вас уровень/.test(view()), 'выбор уровня');
+      A.obLv({ lv: 'a1' }); A.obNext(); ok(/Сколько минут/.test(view()), 'выбор цели');
+      A.obGoal({ m: 30 }); A.obDone(); T.render();
+      ok(T.S.onboarded && T.S.goal === 30, 'знакомство сохранено');
+      ok(/Цель на сегодня/.test(view()) && /Знакомство/.test(view()), 'главная: цель и следующий урок');
+
+      // урок целиком, одна ошибка нарочно
+      A.lesson({ id: 'a1-1' }); nav('#run');
+      let guard = 0, wrongDone = false, types = {};
+      const solve = () => {
+        const R = T.R, s = R.sc[R.i]; types[s.t] = (types[s.t] || 0) + 1;
+        if (s.t === 'choice') {
+          let i = s.opts.indexOf(s.a);
+          if (!wrongDone && !s.test && s.ref) { i = s.opts.findIndex((o) => o !== s.a); wrongDone = true; }
+          A.pick({ i });
+          if (s.test) A.testNext(); else A.next();
+        } else if (s.t === 'order') {
+          const want = s.a.replace(/[.?!]+$/, '').replace(/,/g, '').split(/\s+/); const used = [];
+          R.st.placed = want.map((w) => { const j = s.tiles.findIndex((t, k) => t === w && !used.includes(k)); used.push(j); return j; });
+          A.checkOrder(); ok(T.R.st.ok, 'собрать фразу: ' + s.a); A.next();
+        } else if (s.t === 'type') {
+          document.getElementById('ans').value = s.a; A.checkType(); ok(T.R.st.ok, 'написать: ' + s.a); A.next();
+        } else A.next();
+      };
+      while (T.R && T.R.sc[T.R.i].t !== 'result' && guard++ < 200) solve();
+      ok(T.R && T.R.sc[T.R.i].t === 'result', 'урок дошёл до итогов (' + guard + ' экранов)');
+      ok(Object.keys(types).length >= 10, 'в уроке все виды экранов: ' + Object.keys(types).join(','));
+      ok(T.R.sc.some((s) => s.retry), 'ошибка вернулась на повтор');
+      ok(/Урок пройден/.test(view()), 'экран итогов урока');
+      ok(T.S.lessons['a1-1'] && T.S.lessons['a1-1'].best === 100, 'урок записан, тест 100%');
+      ok(Object.keys(T.S.cards).length === 8, 'слова урока в карточках');
+      ok(Object.keys(T.S.wrong).length === 0, 'ошибка снята после верного повтора');
+      A.runDone();
+
+      // разделы
+      [['#home', /Продолжить|Урок 2/], ['#course', /Моя семья/], ['#cards', /Повторить|всё повторено/], ['#practice', /Работа над ошибками/],
+        ['#stats', /подряд/], ['#settings', /Скорость речи/], ['#rule/b2-4', /Фразовые глаголы/], ['#lesson/b1-3', /Начать урок/], ['#read/r-b1-1', /Сверить/]]
+        .forEach(([h, re]) => { nav(h); ok(re.test(view()), 'раздел ' + h); });
+
+      // карточки
+      Object.values(T.S.cards).forEach((c) => (c.due = 0)); nav('#cards');
+      ok(/8<\/div><div class="deck-t">/.test(view()), 'карточки к повторению: 8');
+      A.review(); nav('#review');
+      let g = 0; while (T.R !== undefined && document.querySelector('[data-a="flip"]') && g++ < 40) { A.flip(); A.grade({ g: g === 1 ? 0 : 2 }); }
+      ok(/Повторение завершено/.test(view()), 'повторение карточек до конца');
+      const c0 = Object.values(T.S.cards); ok(c0.every((c) => c.due > Date.now()), 'все карточки перенесены в будущее');
+
+      // тест недели
+      A.goWeek(); nav('#run');
+      ok(T.R.kind === 'week', 'тест недели начался');
+      guard = 0; while (T.R.sc[T.R.i].t !== 'result' && guard++ < 30) { const s = T.R.sc[T.R.i]; if (s.t === 'choice') { A.pick({ i: s.opts.indexOf(s.a) }); A.testNext(); } else A.next(); }
+      ok(T.S.tests.length === 1 && T.S.tests[0].ok === 10, 'тест недели: 10 из 10');
+      ok(/Блестяще/.test(view()), 'итоги теста недели');
+      A.runDone();
+
+      // тест уровня — всё верно → B2
+      A.place({}); nav('#run');
+      guard = 0; while (T.R.sc[T.R.i].t !== 'result' && guard++ < 30) { const s = T.R.sc[T.R.i]; if (s.t === 'choice') { A.pick({ i: s.opts.indexOf(s.a) }); A.testNext(); } else A.next(); }
+      ok(T.R.sugg === 'b2', 'тест уровня: всё верно → B2');
+      A.placeOk(); ok(T.S.level === 'b2', 'уровень сменился');
+
+      // чтение
+      A.readQ({ id: 'r-a2-1' }); nav('#run');
+      guard = 0; while (T.R.sc[T.R.i].t !== 'result' && guard++ < 30) { const s = T.R.sc[T.R.i]; A.pick({ i: s.opts.indexOf(s.a) }); A.testNext(); }
+      ok(T.S.reads['r-a2-1'] && T.S.reads['r-a2-1'].ok === 6, 'вопросы к тексту: 6 из 6');
+      A.runDone();
+
+      // сверка ответов
+      ok(T.checkText("I'm a student", 'I am a student.') === 2, "сокращения: I'm = I am");
+      ok(T.checkText('teachr', 'teacher') === 1, 'опечатка засчитывается с пометкой');
+      ok(T.checkText('student', 'teacher') === 0, 'неверное слово не засчитывается');
+
+      // все уроки строятся без ошибок
+      T.ALL.forEach((l) => { const sc = T.buildLesson(l); ok(sc[sc.length - 1].t === 'result' && sc.length > 35, 'урок строится: ' + l.id + ' (' + sc.length + ')'); });
+    } catch (e) { fail.push('ОШИБКА: ' + e.message + ' ' + (e.stack || '').split('\n')[1]); }
+    if (document.body.dataset.err) fail.push('ошибки страницы: ' + document.body.dataset.err);
+    document.body.dataset.res = JSON.stringify({ ok: out.length, fail });
+  })();
+  </script>
+</body>
+</html>
